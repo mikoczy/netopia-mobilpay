@@ -169,18 +169,17 @@ class Request
             return false;
         }
         $src_data = MobilpayGlobal::buildQueryString($params);
-        $enc_data = '';
-        $env_keys = [];
-        $cipher_algo = 'RC4';
-        $result = openssl_seal($src_data, $enc_data, $env_keys, [$public_key], $cipher_algo);
-        if ($result === false) {
+        // OpenSSL 3 dropped RC4 from the default provider; replicate openssl_seal()
+        // manually: random RC4 key, RSA-encrypt it, RC4 the payload in pure PHP.
+        $symKey = openssl_random_pseudo_bytes(16);
+        if ($symKey === false || openssl_public_encrypt($symKey, $encEnvKey, $public_key) === false) {
             $env_key = null;
             $enc_data = null;
 
             return false;
         }
-        $env_key = base64_encode($env_keys[0]);
-        $enc_data = base64_encode($enc_data);
+        $env_key = base64_encode($encEnvKey);
+        $enc_data = base64_encode(Crypt::rc4($symKey, $src_data));
 
         return true;
     }

@@ -5,6 +5,7 @@ namespace Mobilpay\Payment\Request;
 use DOMDocument;
 use DOMNode;
 use Exception;
+use Mobilpay\Payment\Crypt;
 
 /**
  * Class RequestAbstract
@@ -182,12 +183,13 @@ abstract class RequestAbstract
             throw new Exception('Failed decoding envelope key', self::ERROR_CONFIRM_FAILED_DECODING_ENVELOPE_KEY);
         }
 
-        $data = null;
-        $cipher_algo = 'RC4';
-        $result = @openssl_open($srcData, $data, $srcEnvKey, $privateKey, $cipher_algo);
-        if ($result === false) {
+        // OpenSSL 3 removed RC4 from the default provider, so openssl_open() fails
+        // unless the legacy provider is enabled. Do the RSA unwrap natively (that
+        // still works) and run RC4 in pure PHP so we don't depend on OpenSSL config.
+        if (!@openssl_private_decrypt($srcEnvKey, $symKey, $privateKey)) {
             throw new Exception('Failed decrypting data', self::ERROR_CONFIRM_FAILED_DECRYPT_DATA);
         }
+        $data = Crypt::rc4($symKey, $srcData);
 
         return self::factory($data);
     }
@@ -337,13 +339,10 @@ abstract class RequestAbstract
             throw new Exception($errorMessage, self::ERROR_LOAD_X509_CERTIFICATE);
         }
         $srcData = $this->_xmlDoc->saveXML();
-        $publicKeys = [$publicKey];
-        $encData = null;
-        $envKeys = null;
-        $cipher_algo = 'RC4';
-        $result 	 = openssl_seal($srcData, $encData, $envKeys, $publicKeys, $cipher_algo);
-
-        if ($result === false) {
+        // OpenSSL 3 dropped RC4 from the default provider; replicate openssl_seal()
+        // manually: random RC4 key, RSA-encrypt it, RC4 the payload in pure PHP.
+        $symKey = openssl_random_pseudo_bytes(16);
+        if ($symKey === false || openssl_public_encrypt($symKey, $encEnvKey, $publicKey) === false) {
             $this->outEncData = null;
             $this->outEnvKey = null;
             $errorMessage = "Error while encrypting data! Reason:";
@@ -353,8 +352,8 @@ abstract class RequestAbstract
             throw new Exception($errorMessage, self::ERROR_ENCRYPT_DATA);
         }
 
-        $this->outEncData = base64_encode($encData);
-        $this->outEnvKey = base64_encode($envKeys[0]);
+        $this->outEncData = base64_encode(Crypt::rc4($symKey, $srcData));
+        $this->outEnvKey = base64_encode($encEnvKey);
     }
 
     public function getEnvKey()
